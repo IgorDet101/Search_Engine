@@ -3,7 +3,9 @@ package DBEntity;
 import jakarta.persistence.*;
 
 @Entity
-@Table(name = "Find_index")
+@Table(name = "Find_index",
+        indexes = @jakarta.persistence.Index(
+                name = "indx_pId_l_Id", columnList = "page_id, lemma_id", unique = true))
 public class Index {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)

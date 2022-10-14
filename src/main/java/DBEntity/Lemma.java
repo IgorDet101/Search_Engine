@@ -1,6 +1,7 @@
 package DBEntity;
 
 import jakarta.persistence.*;
+import jakarta.persistence.Index;
 
 @Entity
 @Table(name = "Lemmas")
@@ -18,11 +19,14 @@ public class Lemma {
     public Lemma() {
     }
 
-    public Lemma(String lemma, int frequency) {
+    public Lemma(String lemma) {
         this.lemma = lemma;
-        this.frequency = frequency;
+        frequency = 1;
     }
 
+    public void increaseFrequency(){
+        frequency++;
+    }
     public int getId() {
         return id;
     }

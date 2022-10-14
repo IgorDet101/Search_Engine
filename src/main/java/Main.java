@@ -15,7 +15,7 @@ public class Main {
         String text = "компания банк насос шесть кот";
         Search_engine.search(text);
 
-        DBConnection.getSessionFactory().close();
+        DBConnection.getNewSession().getSessionFactory().close();
 //        Session session = DBConnection.getSessionFactory().openSession();
 //        Transaction transaction = session.beginTransaction();
 //        Page page = (Page) DBConnection.getElementsByParameter("Page", "path", "/performance/starshaya_sestra/").getSingleResult();

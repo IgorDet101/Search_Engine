@@ -5,17 +5,19 @@ import java.io.IOException;
 import java.util.HashMap;
 import java.util.Map;
 
-public class GetLemmas {
+public class Lemmatizer {
     private static LuceneMorphology luceneMorphology;
-    private static final Map<String, Integer> lemmas = new HashMap<>();
+    private final Map<String, Integer> lemmas = new HashMap<>();
 
+    public Lemmatizer() {
+    }
     private static void initialMorphology() throws IOException {
         if (luceneMorphology == null) {
             luceneMorphology = new RussianLuceneMorphology();
         }
     }
 
-    public static Map<String, Integer> getLemmas(String sourceText) {
+    public Map<String, Integer> getLemmas(String sourceText) {
         try {
             initialMorphology();
         } catch (IOException e) {
@@ -33,7 +35,7 @@ public class GetLemmas {
                 String normalWord = var[0];
                 String info = var[1];
                 String partOfSpeech = info.split("\\s+")[1];
-                if (isBasic(partOfSpeech)) {
+                if (!isBasic(partOfSpeech)) {
                     Integer count = lemmas.get(normalWord);
                     lemmas.put(normalWord, count == null ? 1 : count + 1);
                 }
@@ -47,9 +49,9 @@ public class GetLemmas {
         try {
             PartsOfSpeech.valueOf(str);
         } catch (IllegalArgumentException ex) {
-            return true;
+            return false;
         }
-        return false;
+        return true;
     }
 }
 

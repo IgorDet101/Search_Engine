@@ -1,31 +1,27 @@
-import DBEntity.Field;
-import DBEntity.Index;
-import DBEntity.Lemma;
-import DBEntity.Page;
+import DBEntity.*;
+import jakarta.persistence.NoResultException;
 import jakarta.persistence.criteria.CriteriaBuilder;
 import jakarta.persistence.criteria.CriteriaQuery;
 import jakarta.persistence.criteria.Root;
 import org.hibernate.Session;
-import org.hibernate.Transaction;
 import org.jsoup.Connection;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 import java.util.concurrent.ForkJoinTask;
 import java.util.concurrent.RecursiveAction;
 import java.util.stream.Collectors;
 
 public class SiteCrawler extends RecursiveAction {
+    private static final Set<String> passedAddressSet = Collections.synchronizedSet(new HashSet<>());
+    private static final Set<String> addedLemmas = Collections.synchronizedSet(new HashSet<>());
     private final String rootUrl;
     private final String fullUrl;
     private final String shortUrl;
     private int connectionStatusCode;
-    private Session session;
+    private final Lemmatizer lemmatizer = new Lemmatizer();
 
     public SiteCrawler(String rootUrl, String shortUrl) {
         this.rootUrl = rootUrl;
@@ -58,79 +54,99 @@ public class SiteCrawler extends RecursiveAction {
         } catch (IOException e) {
             e.printStackTrace();
         }
+        if (doc == null) {
+            return;
+        }
 
         Page page = new Page(shortUrl, connectionStatusCode, doc.html());
 
-        session = DBConnection.getSessionFactory().openSession();
-        Transaction transaction = session.beginTransaction();
-        session.saveOrUpdate(page);
-        transaction.commit();
+        Session session = DBConnection.getNewSession();
+        CriteriaBuilder builder = session.getCriteriaBuilder();
+
+        session.beginTransaction();
+        session.persist(page);
+        session.getTransaction().commit();
 
         createSubTask(doc);
         if (connectionStatusCode == 200) {
             List<Field> fieldList = session.createQuery("From Field", Field.class).getResultList();
             for (Field field : fieldList) {
-                String html = doc.selectFirst(field.getSelector()).html();
-                Map<String, Integer> lemmas = GetLemmas.getLemmas(html);
+                String html = Objects.requireNonNull(doc.selectFirst(field.getSelector())).html();
+                Map<String, Integer> lemmas = lemmatizer.getLemmas(html);
+                Set<String> keySet = new HashSet<>(lemmas.keySet());
 
-                for (String word : lemmas.keySet()) {
-                    Lemma lemma = (Lemma) DBConnection.getElementsByParameter("Lemma", "lemma", word, session).uniqueResult();
-                    if (lemma != null) {
-                        lemma.setFrequency(lemma.getFrequency() + 1);
+                for (String word : keySet) {
+                    Lemma lemma = null;
+
+                    if (addedLemmas.contains(word)) {
+                            CriteriaQuery<Lemma> query = builder.createQuery(Lemma.class);
+                            Root<Lemma> root = query.from(Lemma.class);
+                            query.where(builder.equal(root.get("lemma"), word));
+                        try {
+                            lemma = session.createQuery(query).getSingleResult();
+                        } catch (NoResultException ex) {
+                            try {
+                                wait(100);
+                                lemma = session.createQuery(query).getSingleResult();
+                            } catch (InterruptedException e) {
+                                throw new RuntimeException(e);
+                            }
+                        }
+
                     } else {
-                        lemma = new Lemma(word, 1);
+                        addedLemmas.add(word);
                     }
+
+
+                    session.beginTransaction();
+                    if (lemma != null) {
+                        lemma.increaseFrequency();
+                        session.merge(lemma);
+                    } else {
+                        lemma = new Lemma(word);
+                        session.persist(lemma);
+                    }
+                    session.getTransaction().commit();
 
                     //create index or change his rank
                     int pageId = page.getId();
                     int lemmaId = lemma.getId();
-                    Index index = session.createQuery("From Index Where page_id = :pageId " +
-                                    "AND lemma_id = :lemmaId", Index.class)
-                            .setParameter("pageId", pageId)
-                            .setParameter("lemmaId", lemmaId)
-                            .uniqueResult();
                     float rank = field.getWeight() * lemmas.get(word);
+
+                    CriteriaQuery<Index> query = builder.createQuery(Index.class);
+                    Root<Index> root = query.from(Index.class);
+                    query.where(builder.and(builder.equal(root.get("pageId"), pageId),
+                            builder.equal(root.get("lemmaId"), lemmaId)));
+                    Index index = session.createQuery(query).getSingleResultOrNull();
+
+                    session.beginTransaction();
                     if (index != null) {
                         rank += index.getRank();
                         index.setRank(rank);
+                        session.merge(index);
                     } else {
                         index = new Index(pageId, lemmaId, rank);
+                        session.persist(index);
                     }
-
-                    transaction = session.beginTransaction();
-                    session.save(lemma);
-                    session.save(index);
-                    transaction.commit();
+                    session.getTransaction().commit();
                 }
             }
         }
         session.close();
     }
 
-    private void createSubTask(Document doc) {
-        Set<String> urlSet = null;
-        if (doc != null) {
-            urlSet = doc.select("a").stream()
-                    .map(e -> e.attr("abs:href"))
-                    .filter(e -> e.startsWith(rootUrl))
-                    .filter(e -> e.endsWith("/") | (e.endsWith("html")))
-                    .map(e -> e.substring(rootUrl.length()))
-                    .filter(e -> {
-//                        CriteriaBuilder builder = session.getCriteriaBuilder();
-//                        CriteriaQuery<Page> query = builder.createQuery(Page.class);
-//                        Root<Page> root = query.from(Page.class);
-//                        query.select(root).where(builder.like(root.get("path"), e));
-//                        Page page = session.createQuery(query).getSingleResultOrNull();
+    private synchronized void createSubTask(Document doc) {
+        Set<String> urlSet = doc.select("a").stream()
+                .map(e -> e.attr("abs:href"))
+                .filter(e -> e.startsWith(rootUrl))
+                .filter(e -> e.endsWith("/") | (e.endsWith("html")))
+                .map(e -> e.substring(rootUrl.length()))
+                .filter(e -> !passedAddressSet.contains(e))
+                .collect(Collectors.toSet());
 
 
-                        Page page = (Page) DBConnection.getElementsByParameter("Page", "path", e, session)
-                                .uniqueResult();
-                        return page == null;
-                    })
-                    .collect(Collectors.toSet());
-        }
-
-        if (urlSet != null && urlSet.size() > 1) {
+        if (urlSet.size() >= 1) {
+            passedAddressSet.addAll(urlSet);
             List<SiteCrawler> taskList = new ArrayList<>();
             for (String shortUrl : urlSet) {
                 taskList.add(new SiteCrawler(rootUrl, shortUrl));
